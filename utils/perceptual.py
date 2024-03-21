@@ -1,0 +1,88 @@
+
+# --- Imports --- #
+import torch
+import torch.nn.functional as F
+import torch.nn as  nn
+
+
+# class LossNetwork(torch.nn.Module):
+#     def __init__(self, convnext_model):
+#         super(LossNetwork, self).__init__()
+#         self.convnext_layers = convnext_model
+#         self.layer_name_mapping = [
+#             '1.2.block.6',
+#             '3.2.block.6',
+#             '5.8.block.6',
+#             '7.2.block.6',
+#         ]
+#         self.mse_loss = F.mse_loss
+#     def process_module(self, module_name,module):
+#         if isinstance(module, nn.Sequential):
+#             for sub_name, sub_module in module.named_children():
+#                 self.process_module(sub_module, f"{module_name}.{sub_name}")
+#         else:
+#             return (module_name , module)
+#             # 进行你的操作，例如获取输出等
+#     def output_features(self, x):
+#         output = []
+#         for name, module in self.convnext_layers.named_modules():
+#             returns = self.process_module(name,module)
+#             if returns:
+#                 name , module = returns[0] ,returns[1]
+#                 x = module(x)
+#                 if name in self.layer_name_mapping:
+#                     output.append(x)
+#         return output
+
+#     def forward(self, pr , gt ):
+        
+#         '''
+
+#         :param pr: restore image
+#         :param gt: original  image
+#         :param fm: the features of TransWeather net
+#         :return: Loss
+#         '''
+#         # Denoised image ( B,3,256,256 )
+#         # Ground True ( B,3,256,256 )
+#         loss = []
+#         conv_fm_gt = self.output_features(gt)
+#         conv_fm_pr = self.output_features(pr)
+
+#         for pr_feature, gt_feature in zip(conv_fm_pr, conv_fm_gt):
+#             loss.append(self.mse_loss(pr_feature, gt_feature))
+        
+#         return  sum(loss)/len(loss) # sum(loss1)/len(loss1) 
+
+
+
+class LossNetwork(torch.nn.Module):
+    def __init__(self, vgg_model):
+        super(LossNetwork, self).__init__()
+        self.vgg_layers = vgg_model
+        self.layer_name_mapping = {
+            '3': "relu1_2",
+            '8': "relu2_2",
+            '15': "relu3_3"
+        }
+        self.mse_loss = F.mse_loss
+
+    def output_features(self, x):
+        output = {}
+        for name, module in self.vgg_layers._modules.items():
+            x = module(x)
+            if name in self.layer_name_mapping:
+                output[self.layer_name_mapping[name]] = x
+        return list(output.values())
+
+    def forward(self, pred_im, gt):
+        # Denoised image ( B,3,256,256 )
+        # Ground True ( B,3,256,256 )
+        loss = []
+        pred_im_features = self.output_features(pred_im)
+        gt_features = self.output_features(gt)
+        for pred_im_feature, gt_feature in zip(pred_im_features, gt_features):
+            loss.append(self.mse_loss(pred_im_feature, gt_feature))
+
+        return sum(loss)/len(loss)
+
