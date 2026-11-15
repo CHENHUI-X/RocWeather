@@ -2,9 +2,11 @@
 
 import json
 import logging
+from contextlib import ExitStack
 from dataclasses import replace
 from math import isfinite
 from pathlib import Path
+from time import perf_counter
 
 import torch
 import yaml
@@ -19,6 +21,13 @@ from .data import PairedDataset, model_input
 from .evaluation import evaluate, validation_loader
 from .losses import RestorationLoss
 from .models import RocWeather
+from .monitor import (
+    open_tensorboard,
+    remember_tensorboard_gap,
+    require_tensorboard,
+    write_epoch,
+    write_steps,
+)
 from .runtime import Precision, seed_everything, setup_runtime
 
 LOG = logging.getLogger(__name__)
@@ -40,6 +49,7 @@ def _check_resume(checkpoint, config):
         epochs=previous.train.epochs,
         log_every=previous.train.log_every,
         validate_every=previous.train.validate_every,
+        tensorboard=previous.train.tensorboard,
     )
     data = replace(config.data, root=previous.data.root, workers=previous.data.workers)
     if (config.model, config.loss, train, data, config.eval) != (
@@ -66,7 +76,20 @@ def _prepare_output(output, resume_path, config):
         yaml.safe_dump(config.as_dict(), file, sort_keys=False, allow_unicode=True)
 
 
-def _train_epoch(model, loader, loss_fn, optimizer, scaler, precision, runtime, config, epoch):
+def _train_epoch(
+    model,
+    loader,
+    loss_fn,
+    optimizer,
+    scaler,
+    precision,
+    runtime,
+    config,
+    epoch,
+    *,
+    writer=None,
+    global_step=0,
+):
     model.train()
     names = ["loss", "charbonnier"] + [
         name
@@ -74,6 +97,9 @@ def _train_epoch(model, loader, loss_fn, optimizer, scaler, precision, runtime, 
         if getattr(config.loss, f"{name}_weight")
     ]
     totals = torch.zeros(len(names) + 1, device=runtime.device, dtype=torch.float64)
+    pending = []
+    step_names = [*names, "grad_norm"] if config.train.grad_clip else names
+    lr = optimizer.param_groups[0]["lr"]
     for step, (images, target, _) in enumerate(loader, 1):
         images = images.to(runtime.device, non_blocking=True)
         target = target.to(runtime.device, non_blocking=True)
@@ -87,19 +113,26 @@ def _train_epoch(model, loader, loss_fn, optimizer, scaler, precision, runtime, 
                 prediction = model(images)
         loss, parts = loss_fn(prediction, target, identity)
         scaler.scale(loss).backward()
+        grad_norm = None
         if config.train.grad_clip:
             scaler.unscale_(optimizer)
-            clip_grad_norm_(model.parameters(), config.train.grad_clip)
+            grad_norm = clip_grad_norm_(model.parameters(), config.train.grad_clip)
         scaler.step(optimizer)
         scaler.update()
 
         # 训练中只累加张量；每轮汇总一次，避免每个 batch 跨卡同步。
         with torch.no_grad():
-            totals[:-1] += (
-                torch.stack([loss, *(parts[name] for name in names[1:])]) * images.shape[0]
-            )
+            values = torch.stack([loss, *(parts[name] for name in names[1:])])
+            totals[:-1] += values * images.shape[0]
             totals[-1] += images.shape[0]
+            if writer is not None:
+                pending.append(
+                    torch.cat((values, grad_norm.reshape(1))) if grad_norm is not None else values
+                )
         if runtime.primary and (step % config.train.log_every == 0 or step == len(loader)):
+            if writer is not None:
+                write_steps(writer, step_names, pending, global_step + step - len(pending) + 1, lr)
+                pending.clear()
             LOG.info(
                 "epoch %d | batch %d/%d | 本进程累计 loss %.5f",
                 epoch,
@@ -118,7 +151,10 @@ def train(config, output: Path, *, checkpoint=None, resume_path=None):
     if resume_path is not None:
         _check_resume(checkpoint, config)
 
-    with setup_runtime(config.runtime) as runtime:
+    with setup_runtime(config.runtime) as runtime, ExitStack() as logs:
+        writer_type = (
+            require_tensorboard() if runtime.primary and config.train.tensorboard else None
+        )
         precision = Precision.for_runtime(config.runtime.precision, runtime)
         seed_everything(config.train.seed, runtime.device)
         dataset = PairedDataset(config.data, training=True, seed=config.train.seed)
@@ -170,8 +206,25 @@ def train(config, output: Path, *, checkpoint=None, resume_path=None):
         if checkpoint is not None:
             checkpoint.clear()
 
+        writer = None
         if runtime.primary:
             _prepare_output(output, resume_path, config)
+            if writer_type is not None:
+                writer = logs.enter_context(
+                    open_tensorboard(
+                        writer_type,
+                        output,
+                        config,
+                        base_model,
+                        optimizer,
+                        runtime,
+                        precision,
+                        (len(dataset), len(val_loader.dataset.dataset)),
+                        global_step,
+                    )
+                )
+            elif resume_path is not None:
+                remember_tensorboard_gap(output, global_step)
             LOG.info(
                 "设备 %s | 精度 %s | 进程 %d (%s) | 全局批大小上限 %d | 训练 %d / 验证 %d 张",
                 runtime.device,
@@ -197,23 +250,56 @@ def train(config, output: Path, *, checkpoint=None, resume_path=None):
             epoch_seed = config.train.seed + epoch * runtime.world_size + runtime.rank
             seed_everything(epoch_seed, runtime.device)
             lr = optimizer.param_groups[0]["lr"]
+            if runtime.device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(runtime.device)
+            started = perf_counter()
             training = _train_epoch(
-                model, loader, loss_fn, optimizer, scaler, precision, runtime, config, epoch
+                model,
+                loader,
+                loss_fn,
+                optimizer,
+                scaler,
+                precision,
+                runtime,
+                config,
+                epoch,
+                writer=writer,
+                global_step=global_step,
             )
+            train_seconds = perf_counter() - started
             scheduler.step()
             global_step += len(loader)
 
-            record = {"epoch": epoch, "global_step": global_step, "lr": lr, "train": training}
+            performance = {
+                "train_seconds": train_seconds,
+                "train_images_per_second": len(sampler) * runtime.world_size / train_seconds,
+            }
+            record = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "lr": lr,
+                "train": training,
+                "performance": performance,
+            }
             improved = False
             if epoch % config.train.validate_every == 0 or epoch == config.train.epochs:
                 # 直接调用底层模型；不同 rank 的验证批数不必一致。
+                started = perf_counter()
                 validation = evaluate(base_model, val_loader, config.eval, runtime, precision)
+                performance["validation_seconds"] = perf_counter() - started
                 record["validation"] = validation
                 if best_psnr is None or validation["psnr"] > best_psnr:
                     best_psnr = validation["psnr"]
                     improved = True
 
             if runtime.primary:
+                if runtime.device.type == "cuda":
+                    performance["rank0_peak_allocated_mib"] = (
+                        torch.cuda.max_memory_allocated(runtime.device) / 2**20
+                    )
+                    performance["rank0_peak_reserved_mib"] = (
+                        torch.cuda.max_memory_reserved(runtime.device) / 2**20
+                    )
                 if "validation" in record:
                     LOG.info(
                         "验证 %d 张 | PSNR %.3f dB | SSIM %.5f",
@@ -238,3 +324,5 @@ def train(config, output: Path, *, checkpoint=None, resume_path=None):
                 save_checkpoint(output / "last.pt", state)
                 with (output / "metrics.jsonl").open("a", encoding="utf-8") as log:
                     log.write(json.dumps(record, ensure_ascii=False) + "\n")
+                if writer is not None:
+                    write_epoch(writer, record)

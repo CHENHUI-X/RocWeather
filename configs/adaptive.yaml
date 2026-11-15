@@ -20,3 +20,5 @@ data:
   small_image_mode: edge_pad
   # 固定朝向的雨雪数据先保持方向，需要模拟不同相机朝向时再开启。
   rotate_90: false
+train:
+  tensorboard: true

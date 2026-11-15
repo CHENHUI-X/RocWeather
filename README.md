@@ -27,6 +27,8 @@ python -m rocweather --help
 
 `rocweather` 与 `python -m rocweather` 是同一入口。下列命令均从仓库根目录启动。
 
+自适应配置开启 TensorBoard 日志，可用 `python -m pip install -e '.[tensorboard]'` 安装所需依赖。
+
 ## 数据
 
 ```text
@@ -59,6 +61,12 @@ DDP 的 `train.batch_size` 是每个进程的批大小，乘进程数得到常�
 ### 续训和权重迁移
 
 每轮保存 `last.pt`，验证 PSNR 刷新时保存 `best.pt`。目录还保存实际配置 `config.yaml` 和逐轮日志 `metrics.jsonl`。
+
+启用 `train.tensorboard` 后，实验目录下的 `tensorboard/` 记录生效的模型和训练配置、优化器设置、逐步学习率和各项损失、裁剪前梯度范数，以及每轮的验证指标、耗时和显存。如果使用 DDP，逐步曲线和显存来自 rank 0，每轮训练和验证指标均为全局汇总。以下命令在本机启动看板。
+
+```bash
+python -m tensorboard.main --logdir runs --host 127.0.0.1 --port 6006
+```
 
 ```bash
 # 按原配置继续训练到总共 80 轮

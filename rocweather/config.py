@@ -104,6 +104,7 @@ class TrainConfig:
     seed: int = 666
     log_every: int = 50
     validate_every: int = 1
+    tensorboard: bool = False
 
     def __post_init__(self):
         if min(self.epochs, self.batch_size, self.log_every, self.validate_every) < 1:
