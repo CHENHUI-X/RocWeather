@@ -138,7 +138,7 @@ def train(config, output: Path, *, checkpoint=None, resume_path=None):
 
         base_model = RocWeather(config.model)
         if checkpoint is not None:
-            load_weights(base_model, checkpoint)
+            load_weights(base_model, checkpoint, allow_detail_upgrade=resume_path is None)
         # 卷积的存储布局与逐像素 LayerNorm 对齐，也避免 DDP 桶重复调整深度卷积的梯度布局。
         base_model.to(device=runtime.device, memory_format=torch.channels_last)
         model = runtime.wrap_model(base_model)

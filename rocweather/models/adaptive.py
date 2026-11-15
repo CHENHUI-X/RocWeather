@@ -142,13 +142,35 @@ class ConditionedSkip(nn.Module):
         return decoded + logits.sigmoid() * skip
 
 
-class BandHint(nn.Module):
-    """把原图的一个频带投影到解码特征，并按退化条件调节强度。"""
+class SpatialDetailGate(nn.Module):
+    """从解码特征和高频图中提取两种尺度的线索，逐位置判断保留量。"""
 
     def __init__(self, channels):
         super().__init__()
+        hidden = min(channels, 8)
+        self.reduce = nn.Conv2d(channels + 3, hidden, 1)
+        # 只在少量通道上计算 3×3、5×5 的深度卷积，控制原尺寸开销。
+        self.near = nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden, bias=False)
+        self.wide = nn.Conv2d(hidden, hidden, 5, padding=2, groups=hidden, bias=False)
+        self.logits = nn.Conv2d(hidden, channels, 1)
+        # 从接近原通道门控的行为起步，同时让两条局部支路都能收到梯度。
+        nn.init.normal_(self.logits.weight, std=0.01)
+        nn.init.zeros_(self.logits.bias)
+
+    def forward(self, decoded, band):
+        cues = self.reduce(torch.cat((decoded, band.to(decoded.dtype)), dim=1))
+        context = F.gelu((self.near(cues) + self.wide(cues)) * 0.5)
+        return self.logits(context)
+
+
+class BandHint(nn.Module):
+    """把原图的一个频带投影到解码特征，并按退化条件调节强度。"""
+
+    def __init__(self, channels, *, spatial_gate=False):
+        super().__init__()
         self.project = nn.Conv2d(3, channels, 1, bias=False)
         self.gate = nn.Linear(CONDITION_DIM, channels)
+        self.spatial_gate = SpatialDetailGate(channels) if spatial_gate else None
         nn.init.normal_(self.project.weight, std=0.02)
         nn.init.normal_(self.gate.weight, std=0.01)
         nn.init.zeros_(self.gate.bias)
@@ -156,5 +178,7 @@ class BandHint(nn.Module):
     def forward(self, decoded, band, condition):
         if band.shape[-2:] != decoded.shape[-2:]:
             band = F.adaptive_avg_pool2d(band, decoded.shape[-2:])
-        weight = self.gate(condition).sigmoid()[:, :, None, None]
-        return decoded + self.project(band.to(self.project.weight.dtype)) * weight
+        logits = self.gate(condition)[:, :, None, None]
+        if self.spatial_gate is not None:
+            logits = logits + self.spatial_gate(decoded, band)
+        return decoded + self.project(band.to(self.project.weight.dtype)) * logits.sigmoid()

@@ -1,5 +1,6 @@
 """区分继续训练与仅加载模型权重；只让主进程写断点。"""
 
+import logging
 import pickle
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -38,7 +39,7 @@ def read_checkpoint(path: Path, *, trust_legacy=False):
             return torch.load(file, map_location="cpu", weights_only=False)
 
 
-def load_weights(model, checkpoint):
+def load_weights(model, checkpoint, *, allow_detail_upgrade=False):
     if not isinstance(checkpoint, dict):
         raise ValueError("权重文件必须包含模型 state_dict。")
     state = next(
@@ -53,7 +54,26 @@ def load_weights(model, checkpoint):
         for index in range(4):
             for field in ("weight", "bias"):
                 state.pop(f"Tenc.norm.{index}.{field}", None)
+    upgraded = False
+    if allow_detail_upgrade:
+        current = model.state_dict()
+        added = {name for name in current if name.startswith("convtail.band_hints.5.spatial_gate.")}
+        saved_model = (
+            checkpoint.get("config", {}).get("model", {})
+            if is_training_checkpoint(checkpoint)
+            else {}
+        )
+        # 只迁移完全缺少旧版未定义的门控参数的权重。缺失其他权重仍由严格检查报错。
+        if (
+            added
+            and current.keys() - state.keys() == added
+            and not saved_model.get("spatial_detail_gate", False)
+        ):
+            state.update({name: current[name] for name in added})
+            upgraded = True
     model.load_state_dict(state, strict=True)
+    if upgraded:
+        logging.getLogger(__name__).info("旧自适应权重已加载，局部高频门控使用新初始化参数。")
 
 
 def is_training_checkpoint(checkpoint):

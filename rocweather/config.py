@@ -26,10 +26,13 @@ class ModelConfig:
     tail_drop_path: float = 0.1
     variant: str = "legacy"
     patch_kernels: tuple[int, ...] = ()
+    spatial_detail_gate: bool = False
 
     def __post_init__(self):
         if self.variant not in {"legacy", "adaptive"}:
             raise ValueError("model.variant 必须为 legacy 或 adaptive。")
+        if self.spatial_detail_gate and self.variant != "adaptive":
+            raise ValueError("model.spatial_detail_gate 需要 adaptive 模型。")
         for name in ("channels", "depths", "heads", "kv_reductions", "tail_channels"):
             values = getattr(self, name)
             if len(values) != (2 if name == "tail_channels" else 4) or min(values) < 1:
@@ -63,10 +66,14 @@ class DataConfig:
     crop_size: int = 256
     horizontal_flip: bool = False
     workers: int = 2
+    rotate_90: bool = False
+    small_image_mode: str = "resize"
 
     def __post_init__(self):
         if self.crop_size < 1 or self.workers < 0:
             raise ValueError("data.crop_size 必须为正，data.workers 不得为负。")
+        if self.small_image_mode not in {"resize", "edge_pad"}:
+            raise ValueError("data.small_image_mode 必须为 resize 或 edge_pad。")
 
 
 @dataclass(frozen=True)

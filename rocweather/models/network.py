@@ -248,7 +248,9 @@ class ReconstructionHead(nn.Module):
             self.skip_gates = nn.ModuleList(ConditionedSkip(width) for width in widths[1:4])
             self.band_hints = nn.ModuleDict(
                 {
-                    str(level): BandHint(widths[level])
+                    str(level): BandHint(
+                        widths[level], spatial_gate=config.spatial_detail_gate and band_index == 2
+                    )
                     for level, band_index in enumerate(self.BAND_AT_LEVEL)
                     if band_index is not None
                 }

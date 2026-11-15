@@ -1,4 +1,4 @@
-"""读取成对数据，保证低质图和清晰图始终做相同的裁剪与翻转。"""
+"""读取成对数据，对低质图和清晰图同步应用几何变换。"""
 
 import random
 from pathlib import Path
@@ -75,6 +75,8 @@ class PairedDataset(Dataset):
         self.training = training
         self.crop_size = config.crop_size
         self.horizontal_flip = config.horizontal_flip
+        self.rotate_90 = config.rotate_90
+        self.small_image_mode = config.small_image_mode
         self.resize = resize
         self.seed = seed
         self.pairs = []
@@ -111,24 +113,45 @@ class PairedDataset(Dataset):
         if self.training:
             if degraded.size != clean.size:
                 raise ValueError(f"{source} 与 {target} 的尺寸不同：{degraded.size} / {clean.size}")
-            width, height = degraded.size
-            crop = self.crop_size
-            if min(width, height) < crop:
-                # 小图沿用旧版做法：先放大不足的边，再对两张图取同一位置。
-                width, height = max(width, crop), max(height, crop)
-                degraded, clean = self._resize_pair(degraded, clean, (width, height))
             rng = random.Random((self.seed << 64) + (epoch << 32) + index)
-            x, y = rng.randint(0, width - crop), rng.randint(0, height - crop)
-            box = (x, y, x + crop, y + crop)
-            degraded, clean = degraded.crop(box), clean.crop(box)
-            if self.horizontal_flip and rng.random() < 0.5:
-                degraded, clean = TF.hflip(degraded), TF.hflip(clean)
+            degraded, clean = self._training_patch(degraded, clean, rng)
         elif self.resize:
             degraded, clean = self._resize_pair(degraded, clean, (self.resize, self.resize))
         elif degraded.size != clean.size:
             raise ValueError(f"{source} 与 {target} 的原图尺寸不同：{degraded.size} / {clean.size}")
 
         return model_input(image_tensor(degraded)), image_tensor(clean), source.as_posix()
+
+    def _training_patch(self, degraded, clean, rng):
+        width, height = degraded.size
+        crop = self.crop_size
+        if min(width, height) < crop:
+            new_width, new_height = max(width, crop), max(height, crop)
+            if self.small_image_mode == "edge_pad":
+                # 小图复制边缘补足裁剪尺寸，保留原始雨纹、雪点的像素宽度。
+                padding = [0, 0, new_width - width, new_height - height]
+                degraded = TF.pad(degraded, padding, padding_mode="edge")
+                clean = TF.pad(clean, padding, padding_mode="edge")
+            else:
+                degraded, clean = self._resize_pair(degraded, clean, (new_width, new_height))
+            width, height = new_width, new_height
+
+        x, y = rng.randint(0, width - crop), rng.randint(0, height - crop)
+        box = (x, y, x + crop, y + crop)
+        degraded, clean = degraded.crop(box), clean.crop(box)
+        if self.horizontal_flip and rng.random() < 0.5:
+            degraded, clean = TF.hflip(degraded), TF.hflip(clean)
+        if self.rotate_90:
+            # 整数次直角旋转只重排像素，不插值，也不改变方形裁剪的尺寸。
+            turn = rng.randrange(4)
+            if turn:
+                operation = (
+                    Image.Transpose.ROTATE_90,
+                    Image.Transpose.ROTATE_180,
+                    Image.Transpose.ROTATE_270,
+                )[turn - 1]
+                degraded, clean = degraded.transpose(operation), clean.transpose(operation)
+        return degraded, clean
 
     @staticmethod
     def _resize_pair(degraded, clean, size):

@@ -13,3 +13,10 @@ model:
   attention_dropout: 0.0
   drop_path: 0.05
   tail_drop_path: 0.05
+  spatial_detail_gate: true
+data:
+  crop_size: 256
+  horizontal_flip: true
+  small_image_mode: edge_pad
+  # 固定朝向的雨雪数据先保持方向，需要模拟不同相机朝向时再开启。
+  rotate_90: false
