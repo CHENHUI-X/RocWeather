@@ -91,7 +91,7 @@ class Attention(nn.Module):
         if query_grid is not None:
             self.task_query = nn.Parameter(torch.randn(1, query_grid**2, channels))
 
-    def forward(self, x, size):
+    def forward(self, x, size, query_bias=None):
         batch, length, channels = x.shape
         head_dim = channels // self.heads
         query = x
@@ -102,6 +102,9 @@ class Attention(nn.Module):
                 query = map_to_tokens(
                     F.interpolate(grid, size=size, mode="bilinear", align_corners=False)
                 )
+            if query_bias is not None:
+                # 同一张图的空间查询共享退化偏移，每个位置仍保留自己的可学习查询。
+                query = query + query_bias.unsqueeze(1)
 
         # 紧凑配置可减少浅层 K/V 的数量；基线 reduction=1，保持原来的全局注意力。
         source = x
@@ -179,7 +182,11 @@ class TokenBlock(nn.Module):
         if attention is not None:
             self.apply(init_transformer)
 
-    def forward(self, x, size):
-        mix = self.attn if self.attn is not None else self.modulation
-        x = x + self.drop_path(mix(self.norm1(x), size))
+    def forward(self, x, size, query_bias=None):
+        normalized = self.norm1(x)
+        if self.attn is None:
+            update = self.modulation(normalized, size)
+        else:
+            update = self.attn(normalized, size, query_bias=query_bias)
+        x = x + self.drop_path(update)
         return x + self.drop_path(self.mlp(self.norm2(x)))

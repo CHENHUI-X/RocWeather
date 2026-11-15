@@ -24,16 +24,24 @@ class ModelConfig:
     attention_dropout: float = 0.1
     drop_path: float = 0.1
     tail_drop_path: float = 0.1
+    variant: str = "legacy"
+    patch_kernels: tuple[int, ...] = ()
 
     def __post_init__(self):
+        if self.variant not in {"legacy", "adaptive"}:
+            raise ValueError("model.variant 必须为 legacy 或 adaptive。")
         for name in ("channels", "depths", "heads", "kv_reductions", "tail_channels"):
             values = getattr(self, name)
             if len(values) != (2 if name == "tail_channels" else 4) or min(values) < 1:
                 raise ValueError(f"model.{name} 的长度不正确，或存在小于 1 的数。")
         if self.channels[0] % 2 or any(c % h for c, h in zip(self.channels, self.heads)):
             raise ValueError("首层通道数须为偶数，且各层通道数须能整除各自头数。")
-        if any(k < 1 or k % 2 == 0 for k in (self.patch_kernel, self.focal_window)):
-            raise ValueError("model.patch_kernel 和 focal_window 必须为正奇数。")
+        if self.patch_kernels and len(self.patch_kernels) != 4:
+            raise ValueError("model.patch_kernels 须为四个阶段各指定一个卷积核。")
+        if any(
+            k < 1 or k % 2 == 0 for k in (self.patch_kernel, *self.patch_kernels, self.focal_window)
+        ):
+            raise ValueError("下采样卷积核和 focal_window 必须为正奇数。")
         if (
             min(self.focal_levels, self.decoder_depth, self.query_grid) < 1
             or not isfinite(self.mlp_ratio)

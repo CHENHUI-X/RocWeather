@@ -1,0 +1,15 @@
+# 自适应模型起点：四级通道递增、浅层压缩 K/V、两层中心解码。
+model:
+  variant: adaptive
+  channels: [48, 96, 192, 384]
+  depths: [2, 2, 4, 2]
+  heads: [1, 2, 4, 8]
+  kv_reductions: [4, 2, 1, 1]
+  patch_kernels: [7, 3, 3, 3]
+  tail_channels: [24, 16]
+  decoder_depth: 2
+  mlp_ratio: 2.0
+  dropout: 0.0
+  attention_dropout: 0.0
+  drop_path: 0.05
+  tail_drop_path: 0.05

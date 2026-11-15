@@ -32,6 +32,10 @@ def restore(model, image, config: EvalConfig):
     if not tile or max(height, width) <= tile:
         return model(image).float().clamp_(0, 1)
 
+    # 自适应模型从整图估计一次退化条件。每块仍计算自己的细节特征。
+    condition_for_tiles = getattr(model, "condition_for_tiles", None)
+    condition = condition_for_tiles(image, tile) if condition_for_tiles is not None else None
+    model_kwargs = {"condition": condition} if condition is not None else {}
     rows = _origins(height, tile, config.tile_overlap)
     cols = _origins(width, tile, config.tile_overlap)
     image_sum = torch.zeros_like(image, dtype=torch.float32)
@@ -42,7 +46,7 @@ def restore(model, image, config: EvalConfig):
         for x, x_weight in zip(cols, x_weights):
             region = (..., slice(y, y + tile), slice(x, x + tile))
             weight = y_weights[:, None] * x_weight
-            prediction = model(image[region]).float()
+            prediction = model(image[region], **model_kwargs).float()
             image_sum[region] += prediction * weight
             weight_sum[region] += weight
     return image_sum.div_(weight_sum).clamp_(0, 1)
