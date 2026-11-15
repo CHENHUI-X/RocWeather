@@ -1,0 +1,30 @@
+# 首轮迁移基线：模型通道和深度与原实现相同。
+model:
+  channels: [64, 128, 256, 512]
+  depths: [2, 2, 6, 2]
+  heads: [1, 2, 4, 8]
+  kv_reductions: [1, 1, 1, 1]
+  decoder_depth: 2
+data:
+  root: data
+  train_manifest: train/train.txt
+  val_manifest: test/test.txt
+  crop_size: 256
+  workers: 2
+loss:
+  ssim_weight: 0.05
+  perceptual_weight: 0.04
+  identity_weight: 0.05
+train:
+  epochs: 50
+  batch_size: 1  # 每个进程的批大小；DDP 的有效批大小还要乘 GPU 数量。
+  learning_rate: 0.0001
+  validate_every: 5
+runtime:
+  device: auto
+  precision: auto
+  backend: auto
+eval:
+  resize: 256  # 使用旧版的评估尺寸，便于对照；设为 0 可按原图尺寸评估。
+  tile_size: 256
+  tile_overlap: 32

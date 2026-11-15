@@ -1,0 +1,21 @@
+# 本地数据、实验结果与权重
+/data/
+/checkpoint/
+/logs/
+/runs/
+/代码.zip
+*.pt
+*.pth
+
+# Python 环境、构建产物与编辑器
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.idea/
+.vscode/
+.lh/
