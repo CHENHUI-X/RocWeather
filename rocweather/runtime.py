@@ -96,29 +96,37 @@ def seed_everything(seed, device):
         torch.cuda.manual_seed(seed)
 
 
+def _native_bf16_supported():
+    """仅在硬件原生支持 BF16 时返回 True，避免 T4 等 Turing GPU 上软件模拟导致 cuDNN 卷积失败。"""
+    try:
+        return torch.cuda.is_bf16_supported(including_emulation=False)
+    except TypeError:
+        return torch.cuda.is_bf16_supported()
+
+
 class Precision:
     @classmethod
     def for_runtime(cls, mode, runtime):
         if runtime.distributed and runtime.device.type == "cuda" and mode in {"auto", "bf16"}:
             # 混用 BF16 / FP16 会在 DDP 梯度归约时混入有缩放与无缩放的梯度。
-            support = torch.tensor(int(torch.cuda.is_bf16_supported()), device=runtime.device)
+            support = torch.tensor(int(_native_bf16_supported()), device=runtime.device)
             all_support = runtime.sum(support).item() == runtime.world_size
             if mode == "bf16" and not all_support:
-                raise ValueError("有 CUDA rank 不支持 BF16；请为所有进程使用 fp16 或 fp32。")
+                raise ValueError("有 CUDA rank 不支持原生 BF16；请为所有进程使用 fp16 或 fp32。")
             mode = "bf16" if all_support else "fp16"
         return cls(mode, runtime.device)
 
     def __init__(self, mode, device):
         if mode == "auto":
             mode = (
-                ("bf16" if torch.cuda.is_bf16_supported() else "fp16")
+                ("bf16" if _native_bf16_supported() else "fp16")
                 if device.type == "cuda"
                 else "fp32"
             )
         if mode == "fp16" and device.type != "cuda":
             raise ValueError("FP16 混合精度需要 CUDA；CPU 请用 fp32 或 bf16。")
-        if mode == "bf16" and device.type == "cuda" and not torch.cuda.is_bf16_supported():
-            raise ValueError("该 GPU 不支持 BF16；请选择 fp16 或 fp32。")
+        if mode == "bf16" and device.type == "cuda" and not _native_bf16_supported():
+            raise ValueError("该 GPU 不支持原生 BF16；请选择 fp16 或 fp32。")
         self.mode = mode
         self.device = device
 

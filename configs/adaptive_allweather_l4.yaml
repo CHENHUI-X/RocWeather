@@ -1,0 +1,49 @@
+# 自适应模型 All-Weather 200 轮训练配置（L4 22.5GB / A100 等原生 BF16 显卡，对齐 TransWeather BS=32, lr=2e-4）。
+model:
+  variant: adaptive
+  channels: [48, 96, 192, 384]
+  depths: [2, 2, 4, 2]
+  heads: [1, 2, 4, 8]
+  kv_reductions: [4, 2, 1, 1]
+  patch_kernels: [7, 3, 3, 3]
+  tail_channels: [24, 16]
+  decoder_depth: 2
+  mlp_ratio: 2.0
+  dropout: 0.0
+  attention_dropout: 0.0
+  drop_path: 0.05
+  tail_drop_path: 0.05
+  spatial_detail_gate: true
+data:
+  root: data
+  train_manifest: train/train.txt
+  val_manifest: test/test.txt
+  crop_size: 256
+  horizontal_flip: true
+  small_image_mode: edge_pad
+  rotate_90: false
+  workers: 4
+loss:
+  charbonnier_epsilon: 0.001
+  ssim_weight: 0.05
+  perceptual_weight: 0.04
+  identity_weight: 0.05
+train:
+  epochs: 200
+  batch_size: 32
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  lr_decay: 0.99
+  grad_clip: 1.0
+  seed: 666
+  log_every: 50
+  validate_every: 1
+  tensorboard: true
+runtime:
+  device: cuda
+  precision: bf16
+  backend: auto
+eval:
+  resize: 0
+  tile_size: 256
+  tile_overlap: 32
